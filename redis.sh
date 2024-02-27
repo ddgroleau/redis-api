@@ -1,5 +1,7 @@
 #!/bin/bash
 
+docker stop redis && docker rm redis;
+
 docker run \
 -p 6379:6379 \
 --name redis \

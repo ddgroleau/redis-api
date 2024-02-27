@@ -16,7 +16,7 @@ public class TodoController(IDistributedCache cache) : ControllerBase
     public async Task<IActionResult> Create(string name)
     {
         var todo = new Todo(name);
-        await _cache.SetStringAsync(todo.Id.ToString(), name, new DistributedCacheEntryOptions { SlidingExpiration = TimeSpan.FromSeconds(30) });
+        await _cache.SetStringAsync(todo.Id.ToString(), name);
         return Created(Request.GetDisplayUrl(), todo.Id.ToString());
     }
 
