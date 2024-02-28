@@ -5,6 +5,8 @@ public class Todo
     public Guid Id { get; set; }
     public string? Name { get; set; }
 
+    public Todo() { }
+
     public Todo(string name)
     {
         Id = Guid.NewGuid();

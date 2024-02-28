@@ -7,19 +7,29 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Caching.Distributed;
 using Database;
 using System;
+using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 [Route("api/todos")]
 [ApiController]
 public class TodoController(IDistributedCache _cache, AppDbContext _appContext, ReadOnlyAppDbContext _readOnlyAppContext) : ControllerBase
 {
+    private const int _maxRetryCount = 5;
+    private const int _delayIntervalSeconds = 1;
 
     [HttpPost]
     public async Task<IActionResult> Create(string name)
     {
         var todo = new Todo(name);
+
         _appContext.Todos.Add(todo);
         await _appContext.SaveChangesAsync();
+
+        await _cache.RemoveAsync("all");
         await _cache.SetStringAsync(todo.Id.ToString(), name);
+
+        await WaitForReadReplicaCreated(todo.Id);
+
         return Created(Request.GetDisplayUrl(), todo.Id.ToString());
     }
 
@@ -32,20 +42,39 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
 
         var value = await _cache.GetStringAsync(id);
 
-        // Cache Miss
-        if(value == null)
-        {
-            var entity = await _readOnlyAppContext.Todos.FindAsync(guidId);
-            if (entity != null)
-            {
-                await _cache.SetStringAsync(entity.Id.ToString(), entity.Name ?? "");
-                return Ok(entity);
-            }
+        if(value != null)
+            return Ok(new Todo(id, value.ToString()));
 
-            return NotFound();
+        var entity = await _readOnlyAppContext.Todos.FindAsync(guidId);
+        if (entity != null)
+        {
+            await _cache.SetStringAsync(entity.Id.ToString(), entity.Name ?? "");
+            return Ok(entity);
         }
 
-        return Ok(new Todo(id,value.ToString()));
+        return NotFound();
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> Read()
+    {
+        var allTodosJson = await _cache.GetStringAsync("all");
+ 
+        var allTodos = JsonSerializer.Deserialize<IEnumerable<Todo>>(allTodosJson ?? "[]");
+
+        if (allTodos?.Any() ?? false)
+            return Ok(allTodos);
+
+        var entities = await _readOnlyAppContext.Todos.AsNoTracking().ToListAsync();
+        
+        if (entities.Count > 0)
+        {
+            var json = JsonSerializer.Serialize(entities);
+            await _cache.SetStringAsync("all",json);
+            return Ok(entities);
+        }
+
+        return NotFound();
     }
 
     [HttpPut("{id}")]
@@ -61,8 +90,12 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         {
             entity.Name = newName;
             await _appContext.SaveChangesAsync();
+
+            await _cache.RemoveAsync("all");
             await _cache.SetStringAsync(id, newName);
         }
+
+        await WaitForReadReplicaUpdated("Name", newName, guidId);
 
         return NoContent();
     }
@@ -80,10 +113,60 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         {
             _appContext.Todos.Remove(entity);
             await _appContext.SaveChangesAsync();
+
+            await _cache.RemoveAsync("all");
             await _cache.RemoveAsync(id);
         }
 
+        await WaitForReadReplicaDeleted(guidId);
+
         return NoContent();
+    }
+
+    public async Task InvalidateCache(string key)
+    {
+        await _cache.RemoveAsync(key);
+    }
+
+    public async Task WaitForReadReplicaCreated(Guid id)
+    {
+        Todo? readReplicaEntity = null;
+        var retryCount = 0;
+
+        while (readReplicaEntity is null && retryCount <= _maxRetryCount)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(_delayIntervalSeconds));
+            readReplicaEntity = await _readOnlyAppContext.Todos.AsNoTracking().FirstOrDefaultAsync(t => t.Id.ToString() == id.ToString());
+            retryCount++;
+        }
+    }
+
+    public async Task WaitForReadReplicaUpdated(string propertyName, string value, Guid id)
+    {
+        bool isUpdated = false;
+        var retryCount = 0;
+
+        while (!isUpdated && retryCount <= _maxRetryCount)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(_delayIntervalSeconds));
+            var entity = await _readOnlyAppContext.Todos.AsNoTracking().FirstOrDefaultAsync(t => t.Id.ToString() == id.ToString());
+            var readValue = entity?.GetType()?.GetProperty(propertyName)?.GetValue(entity);
+            isUpdated = readValue?.ToString() == value;
+            retryCount++;
+        }
+    }
+
+    public async Task WaitForReadReplicaDeleted(Guid id)
+    {
+        var readReplicaEntity = await _readOnlyAppContext.Todos.FindAsync(id);
+        var retryCount = 0;
+
+        while (readReplicaEntity != null && retryCount <= _maxRetryCount)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(_delayIntervalSeconds));
+            readReplicaEntity = await _readOnlyAppContext.Todos.AsNoTracking().FirstOrDefaultAsync(t => t.Id.ToString() == id.ToString());
+            retryCount++;
+        }
     }
 
 }
