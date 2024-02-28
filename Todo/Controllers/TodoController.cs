@@ -25,7 +25,7 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         _appContext.Todos.Add(todo);
         await _appContext.SaveChangesAsync();
 
-        await _cache.RemoveAsync("all");
+        await InvalidateCache(["all"]);
         await _cache.SetStringAsync(todo.Id.ToString(), name);
 
         await WaitForReadReplicaCreated(todo.Id);
@@ -91,7 +91,7 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
             entity.Name = newName;
             await _appContext.SaveChangesAsync();
 
-            await _cache.RemoveAsync("all");
+            await InvalidateCache(["all"]);
             await _cache.SetStringAsync(id, newName);
         }
 
@@ -113,9 +113,7 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         {
             _appContext.Todos.Remove(entity);
             await _appContext.SaveChangesAsync();
-
-            await _cache.RemoveAsync("all");
-            await _cache.RemoveAsync(id);
+            await InvalidateCache(["all", id]);
         }
 
         await WaitForReadReplicaDeleted(guidId);
@@ -123,12 +121,15 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         return NoContent();
     }
 
-    public async Task InvalidateCache(string key)
+    private async Task InvalidateCache(IEnumerable<string> keys)
     {
-        await _cache.RemoveAsync(key);
+        var tasks = new List<Task>();
+        foreach(string key in keys)
+             tasks.Add(_cache.RemoveAsync(key));
+        await Task.WhenAll(tasks);
     }
 
-    public async Task WaitForReadReplicaCreated(Guid id)
+    private async Task WaitForReadReplicaCreated(Guid id)
     {
         Todo? readReplicaEntity = null;
         var retryCount = 0;
@@ -141,7 +142,7 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         }
     }
 
-    public async Task WaitForReadReplicaUpdated(string propertyName, string value, Guid id)
+    private async Task WaitForReadReplicaUpdated(string propertyName, string value, Guid id)
     {
         bool isUpdated = false;
         var retryCount = 0;
@@ -156,7 +157,7 @@ public class TodoController(IDistributedCache _cache, AppDbContext _appContext, 
         }
     }
 
-    public async Task WaitForReadReplicaDeleted(Guid id)
+    private async Task WaitForReadReplicaDeleted(Guid id)
     {
         var readReplicaEntity = await _readOnlyAppContext.Todos.FindAsync(id);
         var retryCount = 0;
