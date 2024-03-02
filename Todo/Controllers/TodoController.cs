@@ -1,4 +1,3 @@
-
 namespace redis_api.Todo.Controllers;
 
 using Microsoft.AspNetCore.Mvc;
@@ -9,9 +8,11 @@ using Database;
 using System;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 
 [Route("api/todos")]
 [ApiController]
+[Authorize]
 public class TodoController(IDistributedCache _cache, AppDbContext _appContext, ReadOnlyAppDbContext _readOnlyAppContext) : ControllerBase
 {
     private const int _maxRetryCount = 5;
